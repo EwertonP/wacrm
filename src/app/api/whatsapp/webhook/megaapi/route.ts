@@ -61,6 +61,15 @@ export async function POST(request: Request) {
 
     // Mapear o payload da MegaAPI para a estrutura padronizada
     const fromJid = key.remoteJid || '';
+    if (
+      fromJid.endsWith('@g.us') || 
+      fromJid.endsWith('@broadcast') || 
+      fromJid.endsWith('@newsletter') ||
+      fromJid.includes('status@broadcast')
+    ) {
+      console.log('[megaapi webhook] Ignored group, broadcast, or newsletter message from:', fromJid);
+      return NextResponse.json({ status: 'ignored_non_personal' }, { status: 200 });
+    }
     const fromPhone = fromJid.split('@')[0];
     const messageId = key.id || `mega-in-${Date.now()}`;
     const senderName = envelope.pushName || fromPhone;
