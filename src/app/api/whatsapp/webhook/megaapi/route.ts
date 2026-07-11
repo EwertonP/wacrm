@@ -18,22 +18,31 @@ function supabaseAdmin() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    console.log('[megaapi webhook] received payload:', JSON.stringify(body));
+    console.log('[megaapi webhook] received raw payload:', JSON.stringify(body));
 
-    const instanceKey = body.instance_key;
+    const instanceKey = body.instance_key || body.instanceKey || body.instance;
     if (!instanceKey) {
-      return NextResponse.json({ error: 'Missing instance_key' }, { status: 400 });
+      console.warn('[megaapi webhook] Ignored: missing instanceKey. Body keys:', Object.keys(body));
+      return NextResponse.json({ error: 'Missing instanceKey' }, { status: 400 });
     }
 
-    const msgData = body.message;
-    if (!msgData) {
-      // Pode ser um evento de conexão ou status, retornar 200 OK
+    // Resolve where the message envelope is (contains key, pushName, timestamp)
+    let envelope: any = null;
+    if (body.key) {
+      envelope = body;
+    } else if (body.data && body.data.key) {
+      envelope = body.data;
+    } else if (body.message && body.message.key) {
+      envelope = body.message;
+    }
+
+    if (!envelope) {
+      console.warn('[megaapi webhook] Ignored: no message envelope with key found. Body keys:', Object.keys(body));
       return NextResponse.json({ status: 'ignored_non_message' }, { status: 200 });
     }
 
-    const key = msgData.key;
+    const key = envelope.key;
     if (!key || key.fromMe === true) {
-      // Ignorar mensagens enviadas por nós mesmos (outbound) para evitar duplicação
       return NextResponse.json({ status: 'ignored_outbound' }, { status: 200 });
     }
 
@@ -54,37 +63,52 @@ export async function POST(request: Request) {
     const fromJid = key.remoteJid || '';
     const fromPhone = fromJid.split('@')[0];
     const messageId = key.id || `mega-in-${Date.now()}`;
-    const senderName = msgData.pushName || fromPhone;
-    const messageType = msgData.messageType || 'conversation';
-    const timestamp = msgData.timestamp;
+    const senderName = envelope.pushName || fromPhone;
+    const timestamp = envelope.timestamp || envelope.messageTimestamp;
+
+    // Resolve the message content object (which contains conversation, extendedTextMessage, etc.)
+    let messageContent = envelope.messageData || envelope.message || {};
+    if (typeof messageContent === 'string') {
+      messageContent = { conversation: messageContent };
+    }
+
+    // Resolve messageType (conversation, extendedTextMessage, imageMessage, etc.)
+    let messageType = envelope.messageType;
+    if (!messageType) {
+      const contentKeys = Object.keys(messageContent);
+      if (contentKeys.length > 0) {
+        messageType = contentKeys[0];
+      } else {
+        messageType = 'conversation';
+      }
+    }
 
     let contentText: string | null = null;
     let mediaUrl: string | null = null;
     let typeMapped = 'text';
 
-    const data = msgData.messageData || {};
+    const data = messageContent[messageType] || messageContent || {};
 
     if (messageType === 'conversation' || messageType === 'extendedTextMessage') {
-      contentText = data.text || data.conversation || '';
+      contentText = typeof data === 'string' ? data : data.text || data.conversation || '';
       typeMapped = 'text';
     } else if (messageType === 'imageMessage') {
       contentText = data.caption || null;
-      mediaUrl = data.url || null;
+      mediaUrl = data.url || data.mediaUrl || null;
       typeMapped = 'image';
     } else if (messageType === 'videoMessage') {
       contentText = data.caption || null;
-      mediaUrl = data.url || null;
+      mediaUrl = data.url || data.mediaUrl || null;
       typeMapped = 'video';
     } else if (messageType === 'documentMessage') {
       contentText = data.fileName || data.caption || 'Documento';
-      mediaUrl = data.url || null;
+      mediaUrl = data.url || data.mediaUrl || null;
       typeMapped = 'document';
     } else if (messageType === 'audioMessage') {
-      mediaUrl = data.url || null;
+      mediaUrl = data.url || data.mediaUrl || null;
       typeMapped = 'audio';
     } else {
-      // Fallback para tipos desconhecidos
-      contentText = data.text || data.conversation || '[Mensagem do WhatsApp]';
+      contentText = typeof data === 'string' ? data : data.text || data.conversation || '[Mensagem do WhatsApp]';
       typeMapped = 'text';
     }
 
