@@ -119,6 +119,17 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const { profile, profileLoading, account, accountRole, signOut } = useAuth();
   const totalUnread = useTotalUnread();
   const unreadNotifications = useUnreadNotifications();
+
+  const menuItems = navItems.filter((item) =>
+    ["/dashboard", "/inbox", "/notifications"].includes(item.href)
+  );
+  const outreachItems = navItems.filter((item) =>
+    ["/contacts", "/pipelines", "/broadcasts"].includes(item.href)
+  );
+  const automationItems = navItems.filter((item) =>
+    ["/automations", "/flows", "/agents"].includes(item.href)
+  );
+
   // Only surface the account-name strip when it actually carries
   // information. A solo user's personal account is named after them
   // (the 017 signup trigger seeds it from `full_name`), so showing it
@@ -206,91 +217,154 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
         </div>
 
         {/* Main navigation */}
-        <nav className="flex-1 overflow-y-auto px-3 py-4">
-          <ul className="flex flex-col gap-1">
-            {navItems.map((item) => {
-              const isActive =
-                pathname === item.href ||
-                (item.href !== "/dashboard" && pathname.startsWith(item.href));
+        <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-6">
+          {/* MENU */}
+          <div className="space-y-1">
+            <span className="text-[10px] font-bold tracking-wider text-muted-foreground/40 uppercase px-3 block mb-1">
+              Menu
+            </span>
+            <ul className="flex flex-col gap-0.5">
+              {menuItems.map((item) => {
+                const isActive =
+                  pathname === item.href ||
+                  (item.href !== "/dashboard" && pathname.startsWith(item.href));
 
-              const showUnreadDot =
-                item.href === "/inbox" && totalUnread > 0 && !isActive;
+                const showUnreadDot =
+                  item.href === "/inbox" && totalUnread > 0 && !isActive;
 
-              // Unlike the inbox dot, the notifications count stays visible
-              // even while the page is active — it reflects unread state
-              // (cleared by marking notifications read), not "currently
-              // viewing this section".
-              const showNotificationBadge =
-                item.href === "/notifications" && unreadNotifications > 0;
+                const showNotificationBadge =
+                  item.href === "/notifications" && unreadNotifications > 0;
 
-              return (
-                <li key={item.href}>
-                  <Link
-                    href={item.href}
-                    className={cn(
-                      // Taller on mobile so fingers can hit the row reliably (≥44px).
-                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors lg:py-2",
-                      isActive
-                        ? "bg-primary/10 text-primary"
-                        : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                    )}
-                  >
-                    <item.icon className="h-4 w-4" />
-                    <span className="flex-1">{t(item.labelKey as string)}</span>
-                    {item.beta && (
-                      <span
-                        aria-label={t("beta")}
-                        className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-300"
-                      >
-                        {t("beta")}
-                      </span>
-                    )}
-                    {showUnreadDot && (
-                      <span
-                        aria-label={t("unreadConversations", { count: totalUnread })}
-                        className="relative flex h-2 w-2"
-                      >
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
-                        <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-                      </span>
-                    )}
-                    {showNotificationBadge && (
-                      <span
-                        aria-label={t("unreadNotifications", { count: unreadNotifications })}
-                        className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground"
-                      >
-                        {unreadNotifications > 9 ? "9+" : unreadNotifications}
-                      </span>
-                    )}
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className={cn(
+                        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                        isActive
+                          ? "bg-primary-soft text-primary font-semibold"
+                          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                      )}
+                    >
+                      <item.icon className={cn("h-4 w-4 shrink-0", isActive ? "text-primary" : "text-muted-foreground")} />
+                      <span className="flex-1 truncate">{t(item.labelKey as string)}</span>
+                      {showUnreadDot && (
+                        <span
+                          aria-label={t("unreadConversations", { count: totalUnread })}
+                          className="relative flex h-2 w-2"
+                        >
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+                        </span>
+                      )}
+                      {showNotificationBadge && (
+                        <span
+                          aria-label={t("unreadNotifications", { count: unreadNotifications })}
+                          className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground"
+                        >
+                          {unreadNotifications > 9 ? "9+" : unreadNotifications}
+                        </span>
+                      )}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
 
-          <div className="my-4 border-t border-border" />
+          {/* CONTATOS E VENDAS */}
+          <div className="space-y-1">
+            <span className="text-[10px] font-bold tracking-wider text-muted-foreground/40 uppercase px-3 block mb-1">
+              Contatos e Vendas
+            </span>
+            <ul className="flex flex-col gap-0.5">
+              {outreachItems.map((item) => {
+                const isActive = pathname.startsWith(item.href);
 
-          <ul className="flex flex-col gap-1">
-            {bottomNavItems.map((item) => {
-              const isActive = pathname.startsWith(item.href);
-              return (
-                <li key={item.href}>
-                  <Link
-                    href={item.href}
-                    className={cn(
-                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors lg:py-2",
-                      isActive
-                        ? "bg-primary/10 text-primary"
-                        : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                    )}
-                  >
-                    <item.icon className="h-4 w-4" />
-                    {t(item.labelKey as string)}
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className={cn(
+                        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                        isActive
+                          ? "bg-primary-soft text-primary font-semibold"
+                          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                      )}
+                    >
+                      <item.icon className={cn("h-4 w-4 shrink-0", isActive ? "text-primary" : "text-muted-foreground")} />
+                      <span className="flex-1 truncate">{t(item.labelKey as string)}</span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          {/* AUTOMACÕES */}
+          <div className="space-y-1">
+            <span className="text-[10px] font-bold tracking-wider text-muted-foreground/40 uppercase px-3 block mb-1">
+              Automações
+            </span>
+            <ul className="flex flex-col gap-0.5">
+              {automationItems.map((item) => {
+                const isActive = pathname.startsWith(item.href);
+
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className={cn(
+                        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                        isActive
+                          ? "bg-primary-soft text-primary font-semibold"
+                          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                      )}
+                    >
+                      <item.icon className={cn("h-4 w-4 shrink-0", isActive ? "text-primary" : "text-muted-foreground")} />
+                      <span className="flex-1 truncate">{t(item.labelKey as string)}</span>
+                      {item.beta && (
+                        <span
+                          aria-label={t("beta")}
+                          className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-300 scale-90"
+                        >
+                          {t("beta")}
+                        </span>
+                      )}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          {/* CONFIGURACÕES */}
+          <div className="space-y-1">
+            <span className="text-[10px] font-bold tracking-wider text-muted-foreground/40 uppercase px-3 block mb-1">
+              Configurações
+            </span>
+            <ul className="flex flex-col gap-0.5">
+              {bottomNavItems.map((item) => {
+                const isActive = pathname.startsWith(item.href);
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className={cn(
+                        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                        isActive
+                          ? "bg-primary-soft text-primary font-semibold"
+                          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                      )}
+                    >
+                      <item.icon className={cn("h-4 w-4 shrink-0", isActive ? "text-primary" : "text-muted-foreground")} />
+                      <span className="flex-1 truncate">{t(item.labelKey as string)}</span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         </nav>
 
         {/* User section */}
