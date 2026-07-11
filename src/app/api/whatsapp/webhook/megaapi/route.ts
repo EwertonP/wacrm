@@ -60,16 +60,17 @@ export async function POST(request: Request) {
     }
 
     // Mapear o payload da MegaAPI para a estrutura padronizada
-    const fromJid = key.remoteJid || '';
+    const remoteJid = key.remoteJid || '';
     if (
-      fromJid.endsWith('@g.us') || 
-      fromJid.endsWith('@broadcast') || 
-      fromJid.endsWith('@newsletter') ||
-      fromJid.includes('status@broadcast')
+      remoteJid.endsWith('@g.us') || 
+      remoteJid.endsWith('@broadcast') || 
+      remoteJid.endsWith('@newsletter') ||
+      remoteJid.includes('status@broadcast')
     ) {
-      console.log('[megaapi webhook] Ignored group, broadcast, or newsletter message from:', fromJid);
+      console.log('[megaapi webhook] Ignored group, broadcast, or newsletter message from:', remoteJid);
       return NextResponse.json({ status: 'ignored_non_personal' }, { status: 200 });
     }
+    const fromJid = key.senderPn || remoteJid;
     const fromPhone = fromJid.split('@')[0];
     const messageId = key.id || `mega-in-${Date.now()}`;
     const senderName = envelope.pushName || fromPhone;
@@ -132,7 +133,7 @@ export async function POST(request: Request) {
           fromPhone,
           senderName,
           messageType: typeMapped,
-          contentText: `[DEBUG] fromJid: ${fromJid} | key: ${JSON.stringify(key)} | pushName: ${envelope.pushName} | original: ${contentText}`,
+          contentText,
           mediaUrl,
           timestamp: timestamp ? String(timestamp) : null,
         });
