@@ -15,4 +15,5 @@ export interface SendMessagePayload {
 export interface WhatsAppProvider {
   sendMessage(payload: SendMessagePayload): Promise<{ whatsappMessageId: string }>;
   verifyConnection(): Promise<{ connected: boolean; message?: string; rawInfo?: any }>;
+  sendPresence?(to: string, presence: 'composing' | 'recording' | 'paused'): Promise<void>;
 }

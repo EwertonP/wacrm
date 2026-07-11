@@ -220,9 +220,63 @@ export function MessageComposer({
     el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
   }, []);
 
+  const isTypingRef = useRef(false);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const reportPresence = useCallback(async (presence: 'composing' | 'recording' | 'paused') => {
+    try {
+      await fetch('/api/whatsapp/presence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          presence,
+        }),
+      });
+    } catch (err) {
+      console.error('[composer presence report] failed:', err);
+    }
+  }, [conversationId]);
+
+  const handleTyping = useCallback((currentText: string) => {
+    if (!currentText.trim()) {
+      if (isTypingRef.current) {
+        isTypingRef.current = false;
+        if (typingTimeoutRef.current) {
+          clearTimeout(typingTimeoutRef.current);
+        }
+        reportPresence('paused');
+      }
+      return;
+    }
+
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      reportPresence('composing');
+    }
+
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    typingTimeoutRef.current = setTimeout(() => {
+      isTypingRef.current = false;
+      reportPresence('paused');
+    }, 3000);
+  }, [reportPresence]);
+
   const handleSend = useCallback(async () => {
     const trimmed = text.trim();
     if (!trimmed || sending || sessionExpired) return;
+
+    // Reset typing status on send
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    if (isTypingRef.current) {
+      isTypingRef.current = false;
+      reportPresence('paused');
+    }
 
     setSending(true);
     try {
@@ -234,7 +288,7 @@ export function MessageComposer({
     } finally {
       setSending(false);
     }
-  }, [text, sending, sessionExpired, onSend, replyTo?.id]);
+  }, [text, sending, sessionExpired, onSend, replyTo?.id, reportPresence]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -250,8 +304,9 @@ export function MessageComposer({
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       setText(e.target.value);
       adjustHeight();
+      handleTyping(e.target.value);
     },
-    [adjustHeight]
+    [adjustHeight, handleTyping]
   );
 
   // Ask the AI assistant for a suggested reply and drop it into the
@@ -473,6 +528,7 @@ export function MessageComposer({
       recorderRef.current = recorder;
       await recorder.start();
       setRecording(true);
+      reportPresence('recording');
       setRecordSeconds(0);
       timerRef.current = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
     } catch {
@@ -480,20 +536,22 @@ export function MessageComposer({
       recorderRef.current = null;
       toast.error("Microphone access denied or unavailable.");
     }
-  }, [inputsDisabled, busy, recording, finalizeRecording]);
+  }, [inputsDisabled, busy, recording, finalizeRecording, reportPresence]);
 
   const stopRecording = useCallback(() => {
     clearTimer();
     setRecording(false);
+    reportPresence('paused');
     void recorderRef.current?.stop().catch(() => {});
-  }, [clearTimer]);
+  }, [clearTimer, reportPresence]);
 
   const cancelRecording = useCallback(() => {
     cancelledRef.current = true;
     clearTimer();
     setRecording(false);
+    reportPresence('paused');
     void recorderRef.current?.stop().catch(() => {});
-  }, [clearTimer]);
+  }, [clearTimer, reportPresence]);
 
   // Auto-stop at the cap so a forgotten recording can't blow the
   // upload size limit.

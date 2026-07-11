@@ -1,6 +1,7 @@
 import { NextResponse, after } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { processInboundMessage } from '@/lib/whatsapp/inbound-engine';
+import { decrypt } from '@/lib/whatsapp/encryption';
 
 export const maxDuration = 60;
 
@@ -37,6 +38,34 @@ export async function POST(request: Request) {
     }
 
     if (!envelope) {
+      // Sincronizar status de conexão dinamicamente via webhook
+      if (body.status && instanceKey) {
+        console.log(`[megaapi webhook] Received status update: ${body.status} for instance: ${instanceKey}`);
+        
+        let dbStatus = 'disconnected';
+        if (body.status === 'connected' || body.status === 'authenticated') {
+          dbStatus = 'connected';
+        }
+        
+        const { error: updateErr } = await supabaseAdmin()
+          .from('whatsapp_config')
+          .update({
+            status: dbStatus,
+            connected_at: dbStatus === 'connected' ? new Date().toISOString() : null,
+            updated_at: new Date().toISOString()
+          })
+          .eq('phone_number_id', instanceKey)
+          .eq('provider_type', 'megaapi');
+          
+        if (updateErr) {
+          console.error('[megaapi webhook] Failed to update connection status in DB:', updateErr);
+        } else {
+          console.log('[megaapi webhook] Successfully updated connection status in DB to:', dbStatus);
+        }
+        
+        return NextResponse.json({ status: 'status_updated' }, { status: 200 });
+      }
+
       console.warn('[megaapi webhook] Ignored: no message envelope with key found. Body keys:', Object.keys(body));
       return NextResponse.json({ status: 'ignored_non_message' }, { status: 200 });
     }
@@ -126,6 +155,79 @@ export async function POST(request: Request) {
     // para liberar a requisição do webhook da MegaAPI imediatamente com 200 OK.
     after(async () => {
       try {
+        let finalMediaUrl = mediaUrl;
+
+        // Se for uma mensagem de mídia (imagem, vídeo, documento, áudio), baixamos e subimos para o Supabase Storage
+        if (mediaUrl && ['image', 'video', 'document', 'audio'].includes(typeMapped)) {
+          try {
+            console.log(`[megaapi webhook] Downloading media message keys for ${typeMapped}...`);
+            const decryptedToken = decrypt(config.access_token);
+            const cleanHost = (config.waba_id || 'api2.megaapi.com.br').replace(/^https?:\/\//, '');
+            const downloadUrl = `https://${cleanHost}/rest/instance/downloadMediaMessage/${instanceKey}`;
+
+            const downloadRes = await fetch(downloadUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${decryptedToken}`,
+              },
+              body: JSON.stringify({
+                messageKeys: {
+                  mediaKey: data.mediaKey || '',
+                  directPath: data.directPath || '',
+                  url: data.url || '',
+                  mimetype: data.mimetype || '',
+                  messageType: messageType.replace('Message', ''),
+                },
+              }),
+            });
+
+            if (downloadRes.ok) {
+              const downloadData = await downloadRes.json();
+              if (downloadData && downloadData.base64) {
+                // Extrair o base64 puro
+                const base64Str = downloadData.base64.includes(',')
+                  ? downloadData.base64.split(',')[1]
+                  : downloadData.base64;
+                const buffer = Buffer.from(base64Str, 'base64');
+
+                // Determinar extensão e nome do arquivo
+                const mime = data.mimetype || 'application/octet-stream';
+                const ext = mime.split('/')[1]?.split(';')[0] || 'bin';
+                const path = `account-${config.account_id}/${Date.now()}-inbound-${messageId}.${ext}`;
+
+                // Fazer upload para o Supabase Storage (bucket chat-media)
+                const { error: uploadErr } = await supabaseAdmin()
+                  .storage
+                  .from('chat-media')
+                  .upload(path, buffer, {
+                    contentType: mime,
+                    upsert: true,
+                  });
+
+                if (uploadErr) {
+                  console.error('[megaapi webhook] Supabase Storage upload failed:', uploadErr.message);
+                } else {
+                  // Obter URL pública
+                  const { data: { publicUrl } } = supabaseAdmin()
+                    .storage
+                    .from('chat-media')
+                    .getPublicUrl(path);
+
+                  finalMediaUrl = publicUrl;
+                  console.log('[megaapi webhook] Successfully uploaded media to Supabase Storage:', finalMediaUrl);
+                }
+              } else {
+                console.error('[megaapi webhook] downloadMediaMessage returned no base64:', downloadData);
+              }
+            } else {
+              console.error(`[megaapi webhook] downloadMediaMessage failed with status: ${downloadRes.status} ${downloadRes.statusText}`);
+            }
+          } catch (mediaErr) {
+            console.error('[megaapi webhook] Failed to download/upload media:', mediaErr);
+          }
+        }
+
         await processInboundMessage({
           accountId: config.account_id,
           configOwnerUserId: config.user_id,
@@ -134,7 +236,7 @@ export async function POST(request: Request) {
           senderName,
           messageType: typeMapped,
           contentText,
-          mediaUrl,
+          mediaUrl: finalMediaUrl,
           timestamp: timestamp ? String(timestamp) : null,
         });
       } catch (err) {

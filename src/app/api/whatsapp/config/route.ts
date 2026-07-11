@@ -31,6 +31,50 @@ async function resolveAccountId(
   return data.account_id as string
 }
 
+async function setupMegaApiWebhook(
+  cleanHost: string,
+  instanceKey: string,
+  token: string,
+  webhookUrl: string
+) {
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+
+  try {
+    // 1. Configurar URL do Webhook
+    const webhookRes = await fetch(`https://${cleanHost}/rest/config/${instanceKey}/configWebhook`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        messageData: {
+          url: webhookUrl,
+        },
+      }),
+    });
+    if (!webhookRes.ok) {
+      console.error(`[megaapi] Failed to configWebhook: ${webhookRes.status} ${webhookRes.statusText}`);
+    }
+
+    // 2. Configurar Eventos do Webhook
+    const eventsRes = await fetch(`https://${cleanHost}/rest/config/${instanceKey}/configAcceptWebhooks`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        messageData: {
+          events: ['qrCode', 'messagesInput', 'messagesReaction', 'connectionStatus'],
+        },
+      }),
+    });
+    if (!eventsRes.ok) {
+      console.error(`[megaapi] Failed to configAcceptWebhooks: ${eventsRes.status} ${eventsRes.statusText}`);
+    }
+  } catch (err) {
+    console.error('[megaapi] Error setting up webhook:', err);
+  }
+}
+
 // Lazy-initialised service-role client. We need it to detect a
 // phone_number_id already claimed by a *different* user — under RLS,
 // the user's own session can't see other users' rows, so the conflict
@@ -60,7 +104,7 @@ function supabaseAdmin() {
  *   { connected: false, reason: 'token_corrupted',  message: '...', needs_reset: true }
  *   { connected: false, reason: 'meta_api_error',   message: '...' }
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const supabase = await createClient()
 
@@ -164,6 +208,18 @@ export async function GET() {
             ? resData.instance.user.id.split('@')[0]
             : instanceKey;
           const verifiedName = resData.instance.user?.name || resData.instance.name || 'MegaAPI Connected';
+
+          // Automatically configure the webhook on MegaAPI
+          try {
+            const reqUrl = new URL(request.url);
+            const protocol = reqUrl.protocol;
+            const hostHeader = request.headers.get('host') || reqUrl.host;
+            const appUrl = `${protocol}//${hostHeader}`;
+            const webhookUrl = `${appUrl}/api/whatsapp/webhook/megaapi`;
+            await setupMegaApiWebhook(cleanHost, instanceKey, accessToken, webhookUrl);
+          } catch (e) {
+            console.error('[megaapi webhook setup GET] failed:', e);
+          }
 
           return NextResponse.json({
             connected: true,
@@ -347,6 +403,18 @@ export async function POST(request: Request) {
         isConnected = resData.error === false && resData.instance && (resData.instance.status === 'connected' || resData.instance.user?.id);
         if (isConnected) {
           instanceName = resData.instance.user?.name || resData.instance.name || 'MegaAPI';
+          
+          // Automatically configure the webhook on MegaAPI
+          try {
+            const reqUrl = new URL(request.url);
+            const protocol = reqUrl.protocol;
+            const hostHeader = request.headers.get('host') || reqUrl.host;
+            const appUrl = `${protocol}//${hostHeader}`;
+            const webhookUrl = `${appUrl}/api/whatsapp/webhook/megaapi`;
+            await setupMegaApiWebhook(cleanHost, phone_number_id, access_token, webhookUrl);
+          } catch (e) {
+            console.error('[megaapi webhook setup POST] failed:', e);
+          }
         }
       } catch (err) {
         console.error('MegaAPI server verification failed during save:', err);
