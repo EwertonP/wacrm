@@ -31,7 +31,7 @@ interface ContactFormProps {
   onOpenChange: (open: boolean) => void;
   contact?: Contact | null;
   contactTags?: ContactTag[];
-  onSaved: () => void;
+  onSaved: (contactId?: string) => void;
   /** Open an existing contact's detail view — used by the duplicate
    *  notice to jump to the contact that already owns this number. */
   onViewExisting?: (contactId: string) => void;
@@ -198,7 +198,7 @@ export function ContactForm({
 
       toast.success(isEdit ? t('toastSuccessEdit') : t('toastSuccessAdd'));
       onOpenChange(false);
-      onSaved();
+      onSaved(contactId);
     } catch (err: unknown) {
       // The unique index (migration 022) rejects a duplicate phone that
       // slipped past the on-blur check (race, or a format that

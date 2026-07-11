@@ -735,9 +735,12 @@ export default function ContactsPage() {
         onOpenChange={setFormOpen}
         contact={editContact}
         contactTags={editContactTags}
-        onSaved={() => {
+        onSaved={(contactId) => {
           fetchContacts();
           fetchTags();
+          if (contactId && !editContact) {
+            openDetail(contactId);
+          }
         }}
         onViewExisting={(id) => {
           setFormOpen(false);

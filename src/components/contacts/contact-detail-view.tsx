@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { formatCurrency } from '@/lib/currency';
@@ -38,6 +39,7 @@ import {
   X,
   DollarSign,
   LayoutTemplate,
+  MessageSquare,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -56,11 +58,13 @@ export function ContactDetailView({
 }: ContactDetailViewProps) {
   const t = useTranslations('Contacts.detailView');
   const supabase = createClient();
+  const router = useRouter();
   const { accountId, defaultCurrency } = useAuth();
 
   const [contact, setContact] = useState<Contact | null>(null);
   const [loading, setLoading] = useState(false);
   const [copiedPhone, setCopiedPhone] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
 
   // Send template — lets the business initiate (or re-open) a conversation
   // with this contact by sending an approved template. The send route
@@ -372,6 +376,50 @@ export function ContactDetailView({
     }
   }
 
+  async function handleStartConversation() {
+    if (!contactId || !accountId) return;
+    setRedirecting(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
+      if (!userId) throw new Error('Not authenticated');
+
+      const { data: existing, error: queryErr } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('contact_id', contactId)
+        .eq('account_id', accountId)
+        .maybeSingle();
+
+      if (queryErr) throw queryErr;
+
+      let conversationId = existing?.id;
+
+      if (!conversationId) {
+        const { data: newConv, error: createErr } = await supabase
+          .from('conversations')
+          .insert({
+            account_id: accountId,
+            user_id: userId,
+            contact_id: contactId,
+          })
+          .select('id')
+          .single();
+
+        if (createErr) throw createErr;
+        conversationId = newConv.id;
+      }
+
+      onOpenChange(false);
+      router.push(`/inbox?c=${conversationId}`);
+    } catch (err) {
+      console.error('Failed to start conversation:', err);
+      toast.error('Erro ao abrir o chat com o contato.');
+    } finally {
+      setRedirecting(false);
+    }
+  }
+
   function getInitials(name?: string | null) {
     if (!name) return '?';
     return name
@@ -438,12 +486,26 @@ export function ContactDetailView({
                   </div>
                 </div>
               </div>
-              <div className="mt-3">
+              <div className="mt-3 flex items-center gap-2">
                 <Button
                   size="sm"
+                  onClick={handleStartConversation}
+                  disabled={redirecting}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  {redirecting ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <MessageSquare className="size-4" />
+                  )}
+                  Enviar Mensagem
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
                   onClick={() => setTemplatePickerOpen(true)}
                   disabled={sendingTemplate}
-                  className="bg-primary text-primary-foreground hover:bg-primary/90"
+                  className="border-border hover:bg-muted text-muted-foreground"
                 >
                   {sendingTemplate ? (
                     <Loader2 className="size-4 animate-spin" />
