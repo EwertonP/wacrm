@@ -53,6 +53,7 @@ export function WhatsAppConfig() {
   const [showToken, setShowToken] = useState(false);
   const [config, setConfig] = useState<WhatsAppConfigType | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
+  const [phoneInfo, setPhoneInfo] = useState<{ display_phone_number?: string; verified_name?: string } | null>(null);
   const [resetReason, setResetReason] = useState<ResetReason>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
   const loadedAccountIdRef = useRef<string | null>(null);
@@ -142,19 +143,23 @@ export function WhatsAppConfig() {
 
           if (payload.connected) {
             setConnectionStatus('connected');
+            setPhoneInfo(payload.phone_info || null);
             setResetReason(null);
             setStatusMessage('');
           } else {
             setConnectionStatus('disconnected');
+            setPhoneInfo(null);
             setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
             setStatusMessage(payload.message || '');
           }
         } catch (err) {
           console.error('Health check failed:', err);
           setConnectionStatus('disconnected');
+          setPhoneInfo(null);
         }
       } else {
         setConnectionStatus('disconnected');
+        setPhoneInfo(null);
         setResetReason(null);
         setStatusMessage('');
       }
@@ -322,6 +327,7 @@ export function WhatsAppConfig() {
 
       if (payload.connected) {
         setConnectionStatus('connected');
+        setPhoneInfo(payload.phone_info || null);
         setResetReason(null);
         setStatusMessage('');
         toast.success(
@@ -331,6 +337,7 @@ export function WhatsAppConfig() {
         );
       } else {
         setConnectionStatus('disconnected');
+        setPhoneInfo(null);
         setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
         setStatusMessage(payload.message || '');
         toast.error(payload.message || 'API connection failed');
@@ -338,6 +345,7 @@ export function WhatsAppConfig() {
     } catch (err) {
       console.error('Test connection error:', err);
       setConnectionStatus('disconnected');
+      setPhoneInfo(null);
       toast.error('Connection test failed. Check network and try again.');
     } finally {
       setTesting(false);
@@ -393,6 +401,7 @@ export function WhatsAppConfig() {
       setVerifyToken('');
       setTokenEdited(false);
       setConnectionStatus('disconnected');
+      setPhoneInfo(null);
       setResetReason(null);
       setStatusMessage('');
     } catch (err) {
@@ -481,10 +490,37 @@ export function WhatsAppConfig() {
             </AlertTitle>
           </div>
           <AlertDescription className="text-muted-foreground">
-            {connectionStatus === 'connected'
-              ? t('connectedDesc')
-              : statusMessage ||
-                t('notConnectedDesc')}
+            {connectionStatus === 'connected' ? (
+              <div className="space-y-1">
+                <p>{t('connectedDesc')}</p>
+                {phoneInfo && (
+                  <div className="mt-3 p-3 rounded-lg bg-muted border border-border max-w-sm space-y-1.5 text-xs">
+                    <div className="flex justify-between items-center text-[10px] text-muted-foreground border-b border-border/40 pb-1 mb-1 font-semibold uppercase tracking-wider">
+                      <span>WhatsApp Conectado</span>
+                      <span className="text-primary font-bold">Ativo</span>
+                    </div>
+                    {phoneInfo.verified_name && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Nome:</span>
+                        <span className="font-medium text-foreground">{phoneInfo.verified_name}</span>
+                      </div>
+                    )}
+                    {phoneInfo.display_phone_number && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Número:</span>
+                        <span className="font-mono font-medium text-foreground">
+                          {phoneInfo.display_phone_number.startsWith('+') 
+                            ? phoneInfo.display_phone_number 
+                            : `+${phoneInfo.display_phone_number}`}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              statusMessage || t('notConnectedDesc')
+            )}
           </AlertDescription>
         </Alert>
 
