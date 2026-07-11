@@ -207,6 +207,10 @@ export async function POST(request: Request) {
 
                 if (uploadErr) {
                   console.error('[megaapi webhook] Supabase Storage upload failed:', uploadErr.message);
+                  await supabaseAdmin()
+                    .from('whatsapp_config')
+                    .update({ last_registration_error: `[DEBUG UPLOAD ERR] ${uploadErr.message}` })
+                    .eq('phone_number_id', instanceKey);
                 } else {
                   // Obter URL pública
                   const { data: { publicUrl } } = supabaseAdmin()
@@ -216,15 +220,33 @@ export async function POST(request: Request) {
 
                   finalMediaUrl = publicUrl;
                   console.log('[megaapi webhook] Successfully uploaded media to Supabase Storage:', finalMediaUrl);
+                  await supabaseAdmin()
+                    .from('whatsapp_config')
+                    .update({ last_registration_error: `[DEBUG SUCCESS] Media uploaded. size=${buffer.length}` })
+                    .eq('phone_number_id', instanceKey);
                 }
               } else {
                 console.error('[megaapi webhook] downloadMediaMessage returned no base64:', downloadData);
+                await supabaseAdmin()
+                  .from('whatsapp_config')
+                  .update({ last_registration_error: `[DEBUG NO BASE64] ${JSON.stringify(downloadData)}` })
+                  .eq('phone_number_id', instanceKey);
               }
             } else {
-              console.error(`[megaapi webhook] downloadMediaMessage failed with status: ${downloadRes.status} ${downloadRes.statusText}`);
+              const statusText = downloadRes.statusText || '';
+              console.error(`[megaapi webhook] downloadMediaMessage failed with status: ${downloadRes.status} ${statusText}`);
+              await supabaseAdmin()
+                .from('whatsapp_config')
+                .update({ last_registration_error: `[DEBUG FETCH ERR] Status: ${downloadRes.status} ${statusText}` })
+                .eq('phone_number_id', instanceKey);
             }
           } catch (mediaErr) {
+            const errStr = mediaErr instanceof Error ? mediaErr.message : String(mediaErr);
             console.error('[megaapi webhook] Failed to download/upload media:', mediaErr);
+            await supabaseAdmin()
+              .from('whatsapp_config')
+              .update({ last_registration_error: `[DEBUG EXCEPTION] ${errStr}` })
+              .eq('phone_number_id', instanceKey);
           }
         }
 
