@@ -55,12 +55,6 @@ export function WhatsAppConfig() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
   const [resetReason, setResetReason] = useState<ResetReason>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
-  // Guards against re-hydrating the form when the load effect below
-  // re-runs for reasons unrelated to actually switching accounts —
-  // e.g. Supabase's onAuthStateChange fires a token refresh (new
-  // `user` object, profileLoading flips true/false) when the browser
-  // tab regains focus. Without this, that churn calls fetchConfig()
-  // again and overwrites whatever the user typed but hadn't saved yet.
   const loadedAccountIdRef = useRef<string | null>(null);
 
   const [phoneNumberId, setPhoneNumberId] = useState('');
@@ -69,6 +63,10 @@ export function WhatsAppConfig() {
   const [verifyToken, setVerifyToken] = useState('');
   const [pin, setPin] = useState('');
   const [tokenEdited, setTokenEdited] = useState(false);
+
+  const [providerType, setProviderType] = useState<'meta' | 'megaapi'>('meta');
+  const [qrcode, setQrcode] = useState<string | null>(null);
+  const [loadingQrcode, setLoadingQrcode] = useState(false);
 
   // True once /register has succeeded on Meta's side (timestamp set
   // in the row). When false, the saved config is metadata-only and
@@ -91,7 +89,7 @@ export function WhatsAppConfig() {
 
   const webhookUrl =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/api/whatsapp/webhook`
+      ? `${window.location.origin}/api/whatsapp/webhook${providerType === 'megaapi' ? '/megaapi' : ''}`
       : '';
 
   const fetchConfig = useCallback(async (acctId: string) => {
@@ -118,9 +116,10 @@ export function WhatsAppConfig() {
         setPhoneNumberId(data.phone_number_id || '');
         setWabaId(data.waba_id || '');
         setAccessToken(MASKED_TOKEN);
-        setVerifyToken('');
+        setVerifyToken(data.verify_token ? MASKED_TOKEN : '');
         setPin('');
         setTokenEdited(false);
+        setProviderType(data.provider_type || 'meta');
       } else {
         setConfig(null);
         setPhoneNumberId('');
@@ -129,7 +128,9 @@ export function WhatsAppConfig() {
         setVerifyToken('');
         setPin('');
         setTokenEdited(false);
+        setProviderType('meta');
       }
+      setQrcode(null);
       // Clear any stale probe result when reloading the row.
       setRegistrationProbe(null);
 
@@ -165,12 +166,54 @@ export function WhatsAppConfig() {
     }
   }, [supabase]);
 
+  const loadQrCode = useCallback(async () => {
+    if (!config || providerType !== 'megaapi') return;
+    setLoadingQrcode(true);
+    try {
+      const res = await fetch('/api/whatsapp/megaapi/qrcode');
+      const data = await res.json();
+      if (data.qrcode) {
+        setQrcode(data.qrcode);
+      } else {
+        setQrcode(null);
+      }
+    } catch (err) {
+      console.error('Error loading QR Code:', err);
+    } finally {
+      setLoadingQrcode(false);
+    }
+  }, [config, providerType]);
+
   useEffect(() => {
-    // Need both the auth session (`!authLoading`) AND the profile
-    // (`!profileLoading`, which carries `accountId`). Without the
-    // second guard, the effect would fire with `accountId === null`
-    // for the first render window and bail without ever retrying
-    // once the profile arrives.
+    if (providerType === 'megaapi' && connectionStatus !== 'connected' && config) {
+      loadQrCode();
+    } else {
+      setQrcode(null);
+    }
+  }, [providerType, connectionStatus, config, loadQrCode]);
+
+  useEffect(() => {
+    if (providerType !== 'megaapi' || connectionStatus === 'connected' || !config) return;
+
+    const checkStatus = async () => {
+      try {
+        const res = await fetch('/api/whatsapp/megaapi/status');
+        const data = await res.json();
+        if (data.connected) {
+          setConnectionStatus('connected');
+          toast.success('WhatsApp connected successfully!');
+          if (accountId) fetchConfig(accountId);
+        }
+      } catch (err) {
+        console.error('Error polling status:', err);
+      }
+    };
+
+    const intervalId = setInterval(checkStatus, 5000);
+    return () => clearInterval(intervalId);
+  }, [providerType, connectionStatus, config, accountId, fetchConfig]);
+
+  useEffect(() => {
     if (authLoading || profileLoading) return;
     if (!user || !accountId) {
       loadedAccountIdRef.current = null;
@@ -184,29 +227,23 @@ export function WhatsAppConfig() {
 
   async function handleSave() {
     if (!phoneNumberId.trim()) {
-      toast.error('Phone Number ID is required');
+      toast.error(providerType === 'meta' ? 'Phone Number ID is required' : 'Instance Key is required');
       return;
     }
     if (!config && (!accessToken.trim() || !tokenEdited)) {
-      toast.error('Access Token is required for initial setup');
+      toast.error(providerType === 'meta' ? 'Access Token is required for initial setup' : 'API Token is required for initial setup');
       return;
     }
 
     try {
       setSaving(true);
 
-      // Always POST through the API — it verifies with Meta and encrypts
-      // the access_token server-side with ENCRYPTION_KEY. Skipping this
-      // and writing direct to Supabase stores the token in plaintext,
-      // which then fails decryption on every subsequent health check.
       const payload: Record<string, unknown> = {
         phone_number_id: phoneNumberId.trim(),
         waba_id: wabaId.trim() || null,
-        verify_token: verifyToken.trim() || null,
-        // Optional — only sent when the user filled it in. The server
-        // requires it on first save or when changing numbers; for a
-        // simple token rotation, leaving it blank skips re-register.
-        pin: pin.trim() || null,
+        provider_type: providerType,
+        verify_token: providerType === 'meta' ? (verifyToken.trim() || null) : null,
+        pin: providerType === 'meta' ? (pin.trim() || null) : null,
       };
 
       if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
@@ -456,7 +493,7 @@ export function WhatsAppConfig() {
             without a successful /register call the number won't
             receive inbound events. Surface this dimension separately
             so users don't trust a misleading green banner. */}
-        {config && (
+        {config && providerType === 'meta' && (
           <Alert
             className={
               isRegistered
@@ -564,92 +601,172 @@ export function WhatsAppConfig() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label className="text-muted-foreground">{t('phoneNumberId')}</Label>
-              <Input
-                placeholder="e.g. 100234567890123"
-                value={phoneNumberId}
-                onChange={(e) => setPhoneNumberId(e.target.value)}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-              />
+              <Label className="text-muted-foreground">Provider Type</Label>
+              <select
+                value={providerType}
+                onChange={(e) => {
+                  setProviderType(e.target.value as 'meta' | 'megaapi');
+                  setPhoneNumberId('');
+                  setWabaId(e.target.value === 'megaapi' ? 'api2.megaapi.com.br' : '');
+                  setAccessToken('');
+                  setVerifyToken('');
+                  setPin('');
+                  setTokenEdited(true);
+                }}
+                className="w-full h-10 px-3 rounded-md bg-muted border border-border text-foreground focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+              >
+                <option value="meta">Meta Cloud API (Official)</option>
+                <option value="megaapi">MegaAPI (Unofficial)</option>
+              </select>
             </div>
 
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">{t('wabaId')}</Label>
-              <Input
-                placeholder="e.g. 100234567890456"
-                value={wabaId}
-                onChange={(e) => setWabaId(e.target.value)}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-              />
-            </div>
+            {providerType === 'meta' ? (
+              <>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">{t('phoneNumberId')}</Label>
+                  <Input
+                    placeholder="e.g. 100234567890123"
+                    value={phoneNumberId}
+                    onChange={(e) => setPhoneNumberId(e.target.value)}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                  />
+                </div>
 
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">{t('accessToken')}</Label>
-              <div className="relative">
-                <Input
-                  type={showToken ? 'text' : 'password'}
-                  placeholder={t('accessTokenPlaceholder')}
-                  value={accessToken}
-                  onChange={(e) => {
-                    setAccessToken(e.target.value);
-                    setTokenEdited(true);
-                  }}
-                  onFocus={() => {
-                    if (accessToken === MASKED_TOKEN) {
-                      setAccessToken('');
-                      setTokenEdited(true);
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">{t('wabaId')}</Label>
+                  <Input
+                    placeholder="e.g. 100234567890456"
+                    value={wabaId}
+                    onChange={(e) => setWabaId(e.target.value)}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">{t('accessToken')}</Label>
+                  <div className="relative">
+                    <Input
+                      type={showToken ? 'text' : 'password'}
+                      placeholder={t('accessTokenPlaceholder')}
+                      value={accessToken}
+                      onChange={(e) => {
+                        setAccessToken(e.target.value);
+                        setTokenEdited(true);
+                      }}
+                      onFocus={() => {
+                        if (accessToken === MASKED_TOKEN) {
+                          setAccessToken('');
+                          setTokenEdited(true);
+                        }
+                      }}
+                      className="bg-muted border-border text-foreground placeholder:text-muted-foreground pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowToken(!showToken)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {showToken ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  </div>
+                  {config && !tokenEdited && (
+                    <p className="text-xs text-muted-foreground">
+                      {t('tokenHidden')}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">{t('webhookVerifyToken')}</Label>
+                  <Input
+                    placeholder={t('webhookVerifyTokenPlaceholder')}
+                    value={verifyToken}
+                    onChange={(e) => setVerifyToken(e.target.value)}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t('webhookVerifyTokenHint')}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">
+                    {t('twoStepPin')}
+                    <span className="ml-1 text-muted-foreground">{t('optional')}</span>
+                  </Label>
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    placeholder={t('pinPlaceholder')}
+                    value={pin}
+                    onChange={(e) =>
+                      setPin(e.target.value.replace(/\D/g, '').slice(0, 6))
                     }
-                  }}
-                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowToken(!showToken)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {showToken ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
-              </div>
-              {config && !tokenEdited && (
-                <p className="text-xs text-muted-foreground">
-                  {t('tokenHidden')}
-                </p>
-              )}
-            </div>
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground tracking-widest"
+                  />
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    <span dangerouslySetInnerHTML={{ __html: t('pinHint') }} />
+                  </p>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Instance Key</Label>
+                  <Input
+                    placeholder="e.g. inst_abc123"
+                    value={phoneNumberId}
+                    onChange={(e) => setPhoneNumberId(e.target.value)}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                  />
+                </div>
 
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">{t('webhookVerifyToken')}</Label>
-              <Input
-                placeholder={t('webhookVerifyTokenPlaceholder')}
-                value={verifyToken}
-                onChange={(e) => setVerifyToken(e.target.value)}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-              />
-              <p className="text-xs text-muted-foreground">
-                {t('webhookVerifyTokenHint')}
-              </p>
-            </div>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">MegaAPI Server Host URL</Label>
+                  <Input
+                    placeholder="e.g. api2.megaapi.com.br"
+                    value={wabaId}
+                    onChange={(e) => setWabaId(e.target.value)}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                  />
+                </div>
 
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">
-                {t('twoStepPin')}
-                <span className="ml-1 text-muted-foreground">{t('optional')}</span>
-              </Label>
-              <Input
-                type="text"
-                inputMode="numeric"
-                maxLength={6}
-                placeholder={t('pinPlaceholder')}
-                value={pin}
-                onChange={(e) =>
-                  setPin(e.target.value.replace(/\D/g, '').slice(0, 6))
-                }
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground tracking-widest"
-              />
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                <span dangerouslySetInnerHTML={{ __html: t('pinHint') }} />
-              </p>
-            </div>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">API Token</Label>
+                  <div className="relative">
+                    <Input
+                      type={showToken ? 'text' : 'password'}
+                      placeholder="Enter your MegaAPI token"
+                      value={accessToken}
+                      onChange={(e) => {
+                        setAccessToken(e.target.value);
+                        setTokenEdited(true);
+                      }}
+                      onFocus={() => {
+                        if (accessToken === MASKED_TOKEN) {
+                          setAccessToken('');
+                          setTokenEdited(true);
+                        }
+                      }}
+                      className="bg-muted border-border text-foreground placeholder:text-muted-foreground pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowToken(!showToken)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {showToken ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  </div>
+                  {config && !tokenEdited && (
+                    <p className="text-xs text-muted-foreground">
+                      {t('tokenHidden')}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -742,6 +859,73 @@ export function WhatsAppConfig() {
 
       {/* Setup Instructions Sidebar */}
       <div>
+        {providerType === 'megaapi' && config && (
+          <Card className="mb-6 border-primary/20 bg-card/60">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base text-foreground">Conectar WhatsApp</CardTitle>
+              <CardDescription className="text-muted-foreground text-xs">
+                {connectionStatus === 'connected'
+                  ? 'Sua instância do WhatsApp está conectada ao CRM e pronta para uso.'
+                  : 'Escaneie o QR Code abaixo com o WhatsApp do seu celular para ativar a conexão.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col items-center justify-center pt-2">
+              {connectionStatus === 'connected' ? (
+                <div className="flex flex-col items-center py-6 text-center space-y-3">
+                  <CheckCircle2 className="size-16 text-emerald-500 animate-bounce" />
+                  <p className="text-sm font-semibold text-emerald-400">WhatsApp Conectado!</p>
+                  <p className="text-xs text-muted-foreground">Instância ativa e sincronizando mensagens.</p>
+                </div>
+              ) : loadingQrcode ? (
+                <div className="flex flex-col items-center justify-center py-12 space-y-3">
+                  <Loader2 className="size-8 animate-spin text-primary" />
+                  <p className="text-xs text-muted-foreground">Gerando QR Code...</p>
+                </div>
+              ) : qrcode ? (
+                <div className="flex flex-col items-center py-4 space-y-4">
+                  <div className="p-3 bg-white rounded-lg border border-border">
+                    <img
+                      src={qrcode.startsWith('data:') ? qrcode : `data:image/png;base64,${qrcode}`}
+                      alt="WhatsApp QR Code"
+                      className="size-56 object-contain"
+                    />
+                  </div>
+                  <div className="text-center text-xs text-muted-foreground px-4 space-y-1.5 leading-relaxed">
+                    <p className="font-semibold text-foreground">Como conectar:</p>
+                    <p>1. Abra o WhatsApp no seu aparelho celular.</p>
+                    <p>2. Toque em Mais opções (três pontos) ou Configurações e selecione Dispositivos conectados.</p>
+                    <p>3. Toque em Conectar um dispositivo e aponte para esta tela.</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadQrCode}
+                    className="border-border text-xs mt-2 text-muted-foreground hover:text-foreground"
+                  >
+                    <RotateCcw className="size-3.5 mr-1" />
+                    Atualizar QR Code
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center py-8 text-center space-y-3">
+                  <AlertTriangle className="size-10 text-amber-500" />
+                  <p className="text-sm text-amber-400 font-semibold">QR Code não disponível</p>
+                  <p className="text-xs text-muted-foreground px-4">
+                    Verifique se suas credenciais estão corretas e se a instância está iniciada na MegaAPI.
+                  </p>
+                  <Button
+                    onClick={loadQrCode}
+                    size="sm"
+                    className="bg-primary text-white text-xs mt-2"
+                  >
+                    Tentar Gerar Novamente
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         <Card>
           <CardHeader>
             <CardTitle className="text-foreground text-base">{t('setupInstructions')}</CardTitle>

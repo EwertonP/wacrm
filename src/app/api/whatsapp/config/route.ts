@@ -87,7 +87,7 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, access_token, status')
+      .select('phone_number_id, access_token, status, provider_type, waba_id')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -111,7 +111,6 @@ export async function GET() {
     }
 
     // Try to decrypt the stored token with the current ENCRYPTION_KEY.
-    // If this fails, the key changed (or was never consistent across envs).
     let accessToken: string
     try {
       accessToken = decrypt(config.access_token)
@@ -127,6 +126,75 @@ export async function GET() {
         },
         { status: 200 }
       )
+    }
+
+    const providerType = config.provider_type || 'meta';
+
+    if (providerType === 'megaapi') {
+      // Validate credentials against MegaAPI
+      const instanceKey = config.phone_number_id;
+      const host = config.waba_id || 'api2.megaapi.com.br';
+      const cleanHost = host.replace(/^https?:\/\//, '');
+      const url = `https://${cleanHost}/rest/instance/${instanceKey}`;
+
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+
+        if (!response.ok) {
+          return NextResponse.json(
+            {
+              connected: false,
+              reason: 'meta_api_error',
+              message: `MegaAPI server returned status: ${response.status}`,
+            },
+            { status: 200 }
+          );
+        }
+
+        const resData = await response.json();
+        const isConnected = resData.error === false && resData.instance && (resData.instance.status === 'connected' || resData.instance.user?.id);
+
+        if (isConnected) {
+          const displayPhone = resData.instance.user?.id
+            ? resData.instance.user.id.split('@')[0]
+            : instanceKey;
+          const verifiedName = resData.instance.user?.name || resData.instance.name || 'MegaAPI Connected';
+
+          return NextResponse.json({
+            connected: true,
+            provider_type: 'megaapi',
+            phone_info: {
+              id: instanceKey,
+              display_phone_number: displayPhone,
+              verified_name: verifiedName,
+            },
+          });
+        } else {
+          return NextResponse.json(
+            {
+              connected: false,
+              provider_type: 'megaapi',
+              reason: 'meta_api_error',
+              message: resData.message || 'MegaAPI is disconnected. Please scan the QR Code in settings.',
+            },
+            { status: 200 }
+          );
+        }
+      } catch (err) {
+        return NextResponse.json(
+          {
+            connected: false,
+            reason: 'meta_api_error',
+            message: `Failed to contact MegaAPI server: ${err instanceof Error ? err.message : err}`,
+          },
+          { status: 200 }
+        );
+      }
     }
 
     // Validate credentials against Meta
@@ -185,7 +253,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { phone_number_id, waba_id, access_token, verify_token, pin } = body
+    const { phone_number_id, waba_id, access_token, verify_token, pin, provider_type = 'meta' } = body
 
     if (!access_token || !phone_number_id) {
       return NextResponse.json(
@@ -194,7 +262,7 @@ export async function POST(request: Request) {
       )
     }
 
-    if (pin !== undefined && pin !== null && pin !== '') {
+    if (provider_type === 'meta' && pin !== undefined && pin !== null && pin !== '') {
       if (typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
         return NextResponse.json(
           { error: 'PIN must be exactly 6 digits.' },
@@ -203,13 +271,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // Reject if another account has already claimed this phone_number_id.
-    // wacrm is single-tenant-per-WhatsApp-number — letting two accounts
-    // bind the same number causes the webhook's `.single()` lookup to
-    // throw PGRST116 ("multiple rows"), silently dropping every
-    // inbound message. See issue #136. Post-multi-user we key on
-    // account_id (not user_id) since teammates inside the same account
-    // all share one config; the conflict is between accounts.
+    // Reject if another account has already claimed this phone_number_id/instance_key.
     const { data: claimed, error: claimedError } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('account_id')
@@ -229,25 +291,9 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error:
-            'This WhatsApp phone number is already linked to another account on this instance. Each phone number can only be connected to one wacrm user.',
+            'This WhatsApp phone number or instance key is already linked to another account on this instance.',
         },
         { status: 409 }
-      )
-    }
-
-    // Verify credentials with Meta BEFORE saving
-    let phoneInfo
-    try {
-      phoneInfo = await verifyPhoneNumber({
-        phoneNumberId: phone_number_id,
-        accessToken: access_token,
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown Meta API error'
-      console.error('Meta API verification failed during save:', message)
-      return NextResponse.json(
-        { error: `Meta API error: ${message}` },
-        { status: 400 }
       )
     }
 
@@ -269,45 +315,125 @@ export async function POST(request: Request) {
       )
     }
 
-    // Look up any pre-existing row for this account so we know whether
-    // this number is already registered with Meta — if so we can skip
-    // /register when the user didn't provide a PIN this time around.
+    // Look up any pre-existing row for this account
     const { data: existing } = await supabase
       .from('whatsapp_config')
       .select('id, registered_at, phone_number_id')
       .eq('account_id', accountId)
       .maybeSingle()
 
+    let baseRow: Record<string, any>;
+
+    if (provider_type === 'megaapi') {
+      // Verify credentials with MegaAPI BEFORE saving
+      const cleanHost = (waba_id || 'api2.megaapi.com.br').replace(/^https?:\/\//, '');
+      const url = `https://${cleanHost}/rest/instance/${phone_number_id}`;
+      let isConnected = false;
+      let instanceName = 'MegaAPI';
+
+      try {
+        const response = await fetch(url, {
+          headers: { Authorization: `Bearer ${access_token}` },
+        });
+
+        if (!response.ok) {
+          return NextResponse.json(
+            { error: `MegaAPI server verification failed. Server returned status: ${response.status}` },
+            { status: 400 }
+          );
+        }
+
+        const resData = await response.json();
+        isConnected = resData.error === false && resData.instance && (resData.instance.status === 'connected' || resData.instance.user?.id);
+        if (isConnected) {
+          instanceName = resData.instance.user?.name || resData.instance.name || 'MegaAPI';
+        }
+      } catch (err) {
+        console.error('MegaAPI server verification failed during save:', err);
+        return NextResponse.json(
+          { error: `Failed to connect to MegaAPI server: ${err instanceof Error ? err.message : err}` },
+          { status: 400 }
+        );
+      }
+
+      baseRow = {
+        phone_number_id,
+        waba_id: waba_id || 'api2.megaapi.com.br',
+        access_token: encryptedAccessToken,
+        verify_token: null,
+        status: isConnected ? 'connected' : 'disconnected',
+        connected_at: isConnected ? new Date().toISOString() : null,
+        registered_at: new Date().toISOString(), // Marca como registrado imediatamente para evitar banners de pendência
+        subscribed_apps_at: new Date().toISOString(),
+        last_registration_error: null,
+        provider_type: 'megaapi',
+        updated_at: new Date().toISOString(),
+      };
+
+      if (existing) {
+        const { error: updateError } = await supabase
+          .from('whatsapp_config')
+          .update(baseRow)
+          .eq('account_id', accountId);
+
+        if (updateError) {
+          console.error('Error updating whatsapp_config:', updateError);
+          return NextResponse.json({ error: 'Failed to update configuration' }, { status: 500 });
+        }
+      } else {
+        const { error: insertError } = await supabase
+          .from('whatsapp_config')
+          .insert({
+            account_id: accountId,
+            user_id: user.id,
+            ...baseRow,
+          });
+
+        if (insertError) {
+          console.error('Error inserting whatsapp_config:', insertError);
+          return NextResponse.json({ error: 'Failed to save configuration' }, { status: 500 });
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        saved: true,
+        registered: true,
+        provider_type: 'megaapi',
+        phone_info: {
+          id: phone_number_id,
+          verified_name: instanceName,
+        },
+      });
+    }
+
+    // Verify credentials with Meta BEFORE saving (Meta Flow)
+    let phoneInfo
+    try {
+      phoneInfo = await verifyPhoneNumber({
+        phoneNumberId: phone_number_id,
+        accessToken: access_token,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown Meta API error'
+      console.error('Meta API verification failed during save:', message)
+      return NextResponse.json(
+        { error: `Meta API error: ${message}` },
+        { status: 400 }
+      )
+    }
+
     const sameNumber =
       existing?.phone_number_id === phone_number_id &&
       existing?.registered_at != null
 
-    // Step 1: register the phone number for inbound webhooks.
-    //
-    // Attempted on first save AND whenever the user supplies a fresh
-    // PIN (e.g. they rotated the 2FA PIN in Meta Manager). Skipped
-    // when the same number is already registered and no PIN was
-    // supplied — re-registering an already-active number with a
-    // stale PIN would actually fail and undo the active subscription.
     let registeredAt: string | null = existing?.registered_at ?? null
     let registrationError: string | null = null
-    // True when registration was deliberately skipped because no PIN
-    // was supplied (see below). Distinct from registrationError — this
-    // is not a failure, just an incomplete-but-valid save.
     let registrationSkipped = false
 
     const needsRegistration = !sameNumber || (typeof pin === 'string' && pin.length > 0)
     if (needsRegistration) {
       if (!pin) {
-        // No PIN provided. Meta TEST numbers (Developer Console) are
-        // pre-registered by Meta and expose no two-step verification
-        // PIN to set, so requiring one made them impossible to connect
-        // (issue #242). The /register + PIN step only matters for
-        // production numbers under a shared WABA (issue #136), so treat
-        // it as best-effort: skip it, save the (already Meta-verified)
-        // credentials as connected, and leave registered_at null. The
-        // UI surfaces a separate "Not registered" banner with a path to
-        // add a PIN later for users who do need inbound webhook routing.
         registrationSkipped = true
       } else {
         try {
@@ -321,18 +447,10 @@ export async function POST(request: Request) {
           registrationError =
             err instanceof Error ? err.message : 'Unknown Meta API error'
           console.error('Phone number /register failed:', registrationError)
-          // We deliberately fall through and still save the row so the
-          // user can retry without re-entering everything. The UI
-          // surfaces `last_registration_error` so they see WHY it's
-          // not actually live yet.
         }
       }
     }
 
-    // Step 2: subscribe the WABA to this app. Idempotent on Meta's
-    // side, so we call on every save and persist the timestamp.
-    // Skipped only when there's no waba_id (legacy rows from before
-    // we required it).
     let subscribedAppsAt: string | null = null
     if (waba_id) {
       try {
@@ -344,16 +462,10 @@ export async function POST(request: Request) {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         console.warn('WABA subscribed_apps failed (non-fatal):', message)
-        // Subscription failures are rare once the App has the right
-        // permissions; we don't block save on them — the diagnostic
-        // endpoint surfaces this state too.
       }
     }
 
-    // Persist everything in one shot. If /register failed we still
-    // store the credentials and the error so the UI can guide the
-    // user through a retry.
-    const baseRow = {
+    baseRow = {
       phone_number_id,
       waba_id: waba_id || null,
       access_token: encryptedAccessToken,
@@ -363,6 +475,7 @@ export async function POST(request: Request) {
       registered_at: registrationError ? null : registeredAt,
       subscribed_apps_at: subscribedAppsAt ?? null,
       last_registration_error: registrationError,
+      provider_type: 'meta',
       updated_at: new Date().toISOString(),
     }
 
@@ -380,10 +493,6 @@ export async function POST(request: Request) {
         )
       }
     } else {
-      // Insert with both columns: `account_id` is the tenancy key
-      // (NOT NULL post-017, UNIQUE so duplicates trip the constraint
-      // up-front), `user_id` is the audit column identifying which
-      // member of the account saved the config.
       const { error: insertError } = await supabase
         .from('whatsapp_config')
         .insert({
@@ -402,9 +511,6 @@ export async function POST(request: Request) {
     }
 
     if (registrationError) {
-      // Save succeeded but the number isn't actually live. Return
-      // 200 with a structured error so the UI can show the specific
-      // remediation step instead of a generic toast.
       return NextResponse.json({
         success: false,
         saved: true,
@@ -418,10 +524,6 @@ export async function POST(request: Request) {
       success: true,
       saved: true,
       registered: registeredAt != null,
-      // Credentials are valid and saved, but inbound webhook
-      // registration was skipped because no PIN was supplied (e.g. a
-      // Meta test number). The UI shows the "Not registered" banner
-      // rather than claiming the number is fully live.
       registration_skipped: registrationSkipped,
       phone_info: phoneInfo,
     })

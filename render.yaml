@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: wacrm
+    env: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm start
+    envVars:
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+        placeholder: "Your Supabase Project URL"
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+        placeholder: "Your Supabase Anon Key"
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+        placeholder: "Your Supabase Service Role Key"
+      - key: ENCRYPTION_KEY
+        sync: false
+        placeholder: "64-character hex key for token encryption"
+      - key: META_APP_SECRET
+        sync: false
+        placeholder: "Optional: Your Meta App Secret"
+      - key: NEXT_PUBLIC_SITE_URL
+        sync: false
+        placeholder: "Your public Render app URL (e.g., https://wacrm.onrender.com)"
+      - key: NEXT_PUBLIC_APP_LOCALE
+        value: "en"

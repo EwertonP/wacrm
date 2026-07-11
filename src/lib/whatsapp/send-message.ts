@@ -21,14 +21,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import {
-  sendTextMessage,
-  sendTemplateMessage,
-  sendMediaMessage,
-  sendInteractiveButtons,
-  sendInteractiveList,
-  type MediaKind,
-} from '@/lib/whatsapp/meta-api';
+import { MetaProvider } from './providers/meta';
+import { MegaApiProvider } from './providers/megaapi';
 import {
   validateInteractivePayload,
   interactivePayloadPreviewText,
@@ -329,70 +323,35 @@ export async function sendMessageToConversation(
     templateRow = data ?? null;
   }
 
-  const attempt = async (phone: string): Promise<string> => {
-    if (messageType === 'template') {
-      const result = await sendTemplateMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
-        to: phone,
-        templateName: templateName!,
-        language: templateLanguage || 'en_US',
-        template: templateRow ?? undefined,
-        messageParams: templateMessageParams ?? undefined,
-        params: templateParams || [],
-        contextMessageId,
-      });
-      return result.messageId;
-    }
-    if (isMediaKind) {
-      const result = await sendMediaMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
-        to: phone,
-        kind: messageType as MediaKind,
-        link: mediaUrl!,
-        caption: contentText || undefined,
-        filename: filename || undefined,
-        contextMessageId,
-      });
-      return result.messageId;
-    }
-    if (messageType === 'interactive') {
-      const p = interactivePayload!;
-      if (p.kind === 'buttons') {
-        const result = await sendInteractiveButtons({
-          phoneNumberId: config.phone_number_id,
-          accessToken,
-          to: phone,
-          bodyText: p.body,
-          headerText: p.header || undefined,
-          footerText: p.footer || undefined,
-          buttons: p.buttons,
-          contextMessageId,
+  const providerType = config.provider_type || 'meta';
+  const provider =
+    providerType === 'megaapi'
+      ? new MegaApiProvider({
+          instanceKey: config.phone_number_id,
+          token: accessToken,
+          host: config.waba_id,
+        })
+      : new MetaProvider({
+          phone_number_id: config.phone_number_id,
+          waba_id: config.waba_id,
+          access_token: accessToken,
         });
-        return result.messageId;
-      }
-      const result = await sendInteractiveList({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
-        to: phone,
-        bodyText: p.body,
-        buttonLabel: p.button_label,
-        headerText: p.header || undefined,
-        footerText: p.footer || undefined,
-        sections: p.sections,
-        contextMessageId,
-      });
-      return result.messageId;
-    }
-    const result = await sendTextMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+
+  const attempt = async (phone: string): Promise<string> => {
+    const result = await provider.sendMessage({
       to: phone,
-      text: contentText!,
-      contextMessageId,
+      messageType,
+      contentText,
+      mediaUrl,
+      filename,
+      templateName,
+      templateLanguage,
+      templateParams,
+      templateMessageParams,
+      interactivePayload,
+      templateBodyText: templateRow?.body_text || null,
     });
-    return result.messageId;
+    return result.whatsappMessageId;
   };
 
   // Send via Meta — retry across phone-number variants if Meta rejects
