@@ -132,7 +132,7 @@ export async function POST(request: Request) {
           fromPhone,
           senderName,
           messageType: typeMapped,
-          contentText,
+          contentText: `[DEBUG] fromJid: ${fromJid} | key: ${JSON.stringify(key)} | pushName: ${envelope.pushName} | original: ${contentText}`,
           mediaUrl,
           timestamp: timestamp ? String(timestamp) : null,
         });
