@@ -184,11 +184,12 @@ export async function POST(request: Request) {
 
             if (downloadRes.ok) {
               const downloadData = await downloadRes.json();
-              if (downloadData && downloadData.base64) {
+              const mediaContent = downloadData && (downloadData.data || downloadData.base64);
+              if (mediaContent) {
                 // Extrair o base64 puro
-                const base64Str = downloadData.base64.includes(',')
-                  ? downloadData.base64.split(',')[1]
-                  : downloadData.base64;
+                const base64Str = mediaContent.includes(',')
+                  ? mediaContent.split(',')[1]
+                  : mediaContent;
                 const buffer = Buffer.from(base64Str, 'base64');
 
                 // Determinar extensão e nome do arquivo
